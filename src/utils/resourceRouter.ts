@@ -3,6 +3,7 @@ import { isValidObjectId, Model } from "mongoose";
 import { authMiddleware } from "../middlewares/auth.middleware";
 import { asyncHandler } from "./asyncHandler";
 import { CustomError } from "../errors/customError.error";
+import { ADMIN_ROLE_ID, EDITOR_ROLE_ID, requireRoles } from "../middlewares/role.middleware";
 
 type AnyRecord = Record<string, unknown>;
 
@@ -11,6 +12,7 @@ export interface ResourceRouterOptions {
   transformCreate?: (body: AnyRecord) => Promise<AnyRecord> | AnyRecord;
   transformUpdate?: (body: AnyRecord) => Promise<AnyRecord> | AnyRecord;
   sanitize?: (doc: AnyRecord) => AnyRecord;
+  allowedRoleIds?: number[];
 }
 
 function buildSearch(searchableFields: string[] | undefined, term: string) {
@@ -33,7 +35,7 @@ function toNumber(value: unknown, fallback: number) {
 export function buildResourceRouter(model: Model<any>, options: ResourceRouterOptions = {}) {
   const router = Router();
 
-  router.use(authMiddleware);
+  router.use(authMiddleware, requireRoles(...(options.allowedRoleIds || [ADMIN_ROLE_ID, EDITOR_ROLE_ID])));
 
   router.get(
     "/",

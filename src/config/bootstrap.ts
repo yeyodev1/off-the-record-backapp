@@ -30,10 +30,8 @@ async function ensureTypes() {
 }
 
 async function ensureAdminUser() {
-  const total = await UserModel.countDocuments();
-  if (total > 0) {
-    return;
-  }
+  const hasAdmin = await UserModel.exists({ roleId: 1 });
+  if (hasAdmin) return;
 
   const email = process.env.BOOTSTRAP_ADMIN_EMAIL || "admin@local.test";
   const password = process.env.BOOTSTRAP_ADMIN_PASSWORD || "admin1234";
@@ -51,8 +49,28 @@ async function ensureAdminUser() {
   console.log(`Bootstrap admin ready: ${email}`);
 }
 
+async function ensureReaderUser() {
+  const email = process.env.BOOTSTRAP_READER_EMAIL || "reader@local.test";
+  const exists = await UserModel.exists({ email });
+  if (exists) return;
+
+  const password = process.env.BOOTSTRAP_READER_PASSWORD || "reader1234";
+  await UserModel.create({
+    name: "Reader",
+    lastname: "Off The Record",
+    email,
+    password: await hashPassword(password),
+    active: true,
+    roleId: 2,
+    changepass: false,
+  });
+
+  console.log(`Bootstrap reader ready: ${email}`);
+}
+
 export async function bootstrapData() {
   await ensureRoles();
   await ensureTypes();
   await ensureAdminUser();
+  await ensureReaderUser();
 }

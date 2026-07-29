@@ -4,7 +4,7 @@ const uploadSchema = new Schema(
   {
     url: { type: String, required: true, trim: true },
     name: { type: String, required: true, trim: true },
-    userId: { type: Number, required: true },
+    userId: { type: String, required: true },
   },
   { timestamps: true, versionKey: false },
 );

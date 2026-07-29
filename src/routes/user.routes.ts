@@ -1,31 +1,14 @@
-import { buildResourceRouter } from "../utils/resourceRouter";
-import { UserModel } from "../models/user.model";
-import { hashPassword } from "../utils/password";
+import { Router } from "express";
+import { authMiddleware } from "../middlewares/auth.middleware";
+import { ADMIN_ROLE_ID, requireRoles } from "../middlewares/role.middleware";
+import { asyncHandler } from "../utils/asyncHandler";
+import { createUser, deleteUser, listUsers, updateUser } from "../controllers/user.controller";
 
-export default buildResourceRouter(UserModel, {
-  searchableFields: ["name", "lastname", "email", "ci", "phone"],
-  transformCreate: async (body) => ({
-    ...body,
-    email: typeof body.email === "string" ? body.email.toLowerCase() : body.email,
-    password: body.password ? await hashPassword(String(body.password)) : undefined,
-  }),
-  transformUpdate: async (body) => {
-    const nextBody = { ...body };
+const router = Router();
+router.use(authMiddleware, requireRoles(ADMIN_ROLE_ID));
+router.get("/", asyncHandler(listUsers));
+router.post("/", asyncHandler(createUser));
+router.put("/:id", asyncHandler(updateUser));
+router.delete("/:id", asyncHandler(deleteUser));
 
-    if (typeof nextBody.email === "string") {
-      nextBody.email = nextBody.email.toLowerCase();
-    }
-
-    if (typeof nextBody.password === "string" && nextBody.password.length > 0) {
-      nextBody.password = await hashPassword(nextBody.password);
-    } else {
-      delete nextBody.password;
-    }
-
-    return nextBody;
-  },
-  sanitize: (doc) => {
-    const { password, tokenVersion, ...safe } = doc;
-    return safe;
-  },
-});
+export default router;
