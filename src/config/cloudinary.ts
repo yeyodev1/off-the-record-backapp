@@ -1,7 +1,7 @@
 import { v2 as cloudinary } from "cloudinary";
 import { config as loadEnv } from "dotenv";
 
-loadEnv();
+loadEnv({ override: process.env.NODE_ENV !== "production" });
 
 const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
 const apiKey = process.env.CLOUDINARY_API_KEY;
