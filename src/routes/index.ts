@@ -157,6 +157,10 @@ function routerApi(app: Application) {
   router.post("/ai/intertitles", authMiddleware, EDITORIAL, asyncHandler(ai.intertitles));
   router.post("/ai/headlines", authMiddleware, EDITORIAL, asyncHandler(ai.headlines));
   router.post("/ai/infographic", authMiddleware, EDITORIAL, asyncHandler(ai.infographic));
+  router.post("/ai/infographic-posters", authMiddleware, EDITORIAL, asyncHandler(ai.infographicPosters));
+  router.post("/ai/infographic-posters/choose", authMiddleware, EDITORIAL, asyncHandler(ai.infographicChoose));
+  router.post("/ai/photos", authMiddleware, EDITORIAL, asyncHandler(ai.photos));
+  router.post("/ai/photos/choose", authMiddleware, EDITORIAL, asyncHandler(ai.photoChoose));
   router.post("/ai/image", authMiddleware, EDITORIAL, asyncHandler(ai.image));
   router.post("/ai/audio", authMiddleware, EDITORIAL, asyncHandler(ai.audio));
   router.post("/ai/video", authMiddleware, EDITORIAL, asyncHandler(ai.video));
