@@ -2,6 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { cloudinary, isCloudinaryConfigured } from "../config/cloudinary";
 import { stripHtml } from "./content.service";
 import {
+  GeminiImageInput,
   downloadGeminiVideo,
   geminiImage,
   geminiJson,
@@ -52,6 +53,8 @@ export function aiCapabilities() {
     audio: gemini || Boolean(process.env.OPENAI_API_KEY),
     video: gemini || Boolean(process.env.AI_VIDEO_WEBHOOK),
     infographic: Boolean(textProvider()),
+    infographicImage: gemini && isCloudinaryConfigured(),
+    photos: isCloudinaryConfigured(),
     reports: Boolean(textProvider()),
     storage: isCloudinaryConfigured(),
   };
@@ -289,6 +292,357 @@ export async function generateInfographic(body: string, hint = "") {
       .join("\n"),
     INFOGRAPHIC_SCHEMA,
   );
+}
+
+/* ------------------------------------------------------------------ */
+/* Infografías de imagen (pósters)                                     */
+/* ------------------------------------------------------------------ */
+
+const POSTER_BRIEF_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    headline: { type: "string", description: "Titular corto y contundente, máximo 8 palabras" },
+    subtitle: { type: "string", description: "Bajada de una frase que contextualiza" },
+    subject: {
+      type: "string",
+      description: "Nombre propio de la persona protagonista del texto (ej. 'Rafael Correa'), o cadena vacía si no hay una persona central",
+    },
+    stats: {
+      type: "array",
+      description: "Entre 3 y 5 cifras clave, las más importantes del texto",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          figure: { type: "string", description: "La cifra exacta tal como aparece, ej. '19,5%'" },
+          label: { type: "string", description: "Qué mide, máximo 6 palabras" },
+        },
+        required: ["figure", "label"],
+      },
+    },
+    comparison: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        title: { type: "string", description: "Título de la comparativa, máximo 5 palabras" },
+        items: {
+          type: "array",
+          description: "Entre 2 y 6 elementos comparados",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              label: { type: "string" },
+              figure: { type: "string" },
+            },
+            required: ["label", "figure"],
+          },
+        },
+      },
+      required: ["title", "items"],
+    },
+    source: { type: "string", description: "Fuente de los datos, ej. 'INEC y Mentinno'" },
+    altText: { type: "string", description: "Descripción accesible en español de la infografía" },
+  },
+  required: ["headline", "subtitle", "subject", "stats", "comparison", "source", "altText"],
+};
+
+export interface PosterBrief {
+  headline: string;
+  subtitle: string;
+  subject: string;
+  stats: { figure: string; label: string }[];
+  comparison: { title: string; items: { label: string; figure: string }[] };
+  source: string;
+  altText: string;
+}
+
+const POSTER_STYLES = [
+  {
+    key: "editorial",
+    label: "Editorial tipográfica",
+    direction:
+      "flat vector editorial data poster, Swiss grid layout, bold typographic hierarchy with one oversized hero figure, clean chart blocks",
+  },
+  {
+    key: "isometric",
+    label: "Isométrica 3D",
+    direction:
+      "isometric 3D data visualization scene, charts and figures rendered as clean physical objects on floating platforms, soft studio lighting",
+  },
+  {
+    key: "dashboard",
+    label: "Tarjetas de datos",
+    direction:
+      "elegant minimal dashboard-style layout of data cards, thin luminous lines, subtle glassmorphism panels, precise micro-typography",
+  },
+];
+
+function posterPrompt(brief: PosterBrief, direction: string, photoCredit = "") {
+  const stats = brief.stats.map((s) => `"${s.figure}" con la etiqueta "${s.label}"`).join("; ");
+  const comparison = brief.comparison.items.map((i) => `${i.label}: ${i.figure}`).join(" · ");
+  const withPhoto = Boolean(photoCredit);
+
+  const footer = withPhoto ? `Fuente: ${brief.source} · ${photoCredit}` : `Fuente: ${brief.source}`;
+
+  return [
+    'Design a premium single-image editorial infographic poster for the Spanish-language investigative news outlet "OFF THE RECORD".',
+    `Visual style: ${direction}.`,
+    "Color palette: deep navy background, brand red, accent blue, gold and cream for text (the outlet's dark editorial look).",
+    "Vertical poster, everything must fit inside one image with a clear reading order, generous margins and nothing cut off at the edges.",
+    withPhoto
+      ? `The attached photograph shows ${brief.subject}, the story's protagonist. Make this person the poster's hero visual: a clean editorial cutout or duotone treatment integrated with the palette, occupying a prominent area. Preserve the person's face and likeness exactly as in the photograph — do not alter, beautify or replace their features — and do not add any other people.`
+      : "No photographs of real identifiable people.",
+    "No watermarks, crisp legible typography at small sizes.",
+    "",
+    "TEXT RULES — follow them strictly:",
+    "- The only text allowed in the image is the quoted Spanish text from the list below, plus the masthead OFF THE RECORD.",
+    "- Copy each quoted string EXACTLY, character by character, with perfect Spanish spelling. The quotes, the numbering and everything written in English are instructions and must NEVER appear in the image.",
+    "- Render each stat exactly once. Do not duplicate, alter or invent numbers, cards or filler text. If space remains, leave clean breathing room or purely decorative graphics without text.",
+    "",
+    "The poster contains, in this order:",
+    "1. Masthead: OFF THE RECORD",
+    `2. Main headline: "${brief.headline}"`,
+    `3. Subheadline: "${brief.subtitle}"`,
+    `4. Highlighted key stats, each one big figure with its small label underneath: ${stats}`,
+    `5. A compact ranked chart titled "${brief.comparison.title}" with: ${comparison}`,
+    `6. Small footer: "${footer}"`,
+  ].join("\n");
+}
+
+export interface InfographicPoster {
+  url: string;
+  publicId: string;
+  bytes: number;
+  style: string;
+  styleLabel: string;
+}
+
+export interface InfographicPosterSet {
+  brief: PosterBrief;
+  posters: InfographicPoster[];
+  /** Crédito de la foto integrada, si el póster lleva a la persona protagonista. */
+  photoCredit?: string;
+  photoSource?: string;
+}
+
+/**
+ * Genera tres pósters candidatos (una sola imagen cada uno) a partir del
+ * reportaje. El editor escoge uno; los descartados se borran con
+ * `discardAiAssets`.
+ */
+export async function generateInfographicPosters(body: string, hint = ""): Promise<InfographicPosterSet> {
+  if (!isGeminiConfigured()) throw new AiUnavailableError("infografía de imagen");
+  if (!isCloudinaryConfigured()) throw new AiUnavailableError("almacenamiento");
+
+  const brief = await completeJson<PosterBrief>(
+    NEWSROOM_SYSTEM,
+    [
+      "Extrae el contenido para una infografía de una sola imagen a partir de este reportaje.",
+      "Usa exclusivamente cifras y afirmaciones presentes en el texto, copiadas con exactitud.",
+      "El conjunto debe caber en un póster: sé selectivo, no exhaustivo.",
+      hint ? `Enfoque solicitado: ${hint}` : "",
+      "",
+      stripHtml(body).slice(0, 40000),
+    ]
+      .filter(Boolean)
+      .join("\n"),
+    POSTER_BRIEF_SCHEMA,
+  );
+
+  // Si hay una persona protagonista, su foto real entra al póster.
+  let photoInputs: GeminiImageInput[] = [];
+  let photoCredit = "";
+  let photoSource = "";
+
+  if (brief.subject.trim()) {
+    try {
+      const found = await searchStockPhotos("", brief.subject);
+      const photo = found.photos[0];
+      const response = await fetch(photo.url, {
+        headers: { "user-agent": "OffTheRecord-newsroom/1.0 (https://offtherecord.ec)" },
+      });
+      if (response.ok) {
+        const mimeType = response.headers.get("content-type") || "image/jpeg";
+        const data = Buffer.from(await response.arrayBuffer()).toString("base64");
+        photoInputs = [{ mimeType, data }];
+        photoCredit = photo.credit;
+        photoSource = photo.pageUrl;
+      }
+    } catch (error) {
+      // Sin foto no se bloquea el póster: sale la versión sin persona.
+      console.warn(`Poster sin foto de "${brief.subject}":`, error instanceof Error ? error.message : error);
+    }
+  }
+
+  const results = await Promise.allSettled(
+    POSTER_STYLES.map(async (style) => {
+      const dataUrl = await geminiImage(posterPrompt(brief, style.direction, photoCredit), "4:5", photoInputs);
+      const uploaded = await uploadBase64(dataUrl, "image");
+      return { ...uploaded, style: style.key, styleLabel: style.label };
+    }),
+  );
+
+  const posters = results
+    .filter((r): r is PromiseFulfilledResult<InfographicPoster> => r.status === "fulfilled")
+    .map((r) => r.value);
+
+  if (!posters.length) {
+    const first = results.find((r): r is PromiseRejectedResult => r.status === "rejected");
+    throw new Error(first?.reason instanceof Error ? first.reason.message : "No se pudo generar ningún póster");
+  }
+
+  return { brief, posters, ...(photoCredit ? { photoCredit, photoSource } : {}) };
+}
+
+/* ------------------------------------------------------------------ */
+/* Fotos de archivo (Wikimedia Commons)                                */
+/* ------------------------------------------------------------------ */
+
+const PHOTO_QUERY_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    query: {
+      type: "string",
+      description: "Término de búsqueda de foto de archivo: nombre propio de la persona o lugar central del texto, ej. 'Rafael Correa'",
+    },
+    altText: { type: "string", description: "Descripción accesible en español de la foto que se busca" },
+  },
+  required: ["query", "altText"],
+};
+
+export interface StockPhoto {
+  /** URL de la imagen en tamaño de trabajo (~1024 px). */
+  url: string;
+  /** Página de la foto en Commons, para trazabilidad. */
+  pageUrl: string;
+  title: string;
+  author: string;
+  license: string;
+  /** Crédito listo para usar como leyenda. */
+  credit: string;
+}
+
+export interface StockPhotoSet {
+  query: string;
+  altText: string;
+  photos: StockPhoto[];
+}
+
+interface CommonsPage {
+  title?: string;
+  imageinfo?: {
+    thumburl?: string;
+    url?: string;
+    mime?: string;
+    descriptionurl?: string;
+    extmetadata?: Record<string, { value?: string }>;
+  }[];
+}
+
+/**
+ * Busca fotos reales en Wikimedia Commons: sin clave, con licencia explícita y
+ * autor citable — lo que un medio puede publicar legalmente.
+ */
+export async function searchStockPhotos(body: string, hint = ""): Promise<StockPhotoSet> {
+  let query = hint.trim();
+  let altText = "";
+
+  if (!query && textProvider()) {
+    const built = await completeJson<{ query: string; altText: string }>(
+      NEWSROOM_SYSTEM,
+      [
+        "Del siguiente texto, identifica el mejor término para buscar una foto de archivo periodística.",
+        "Prefiere el nombre propio de la persona protagonista; si no hay personas, el lugar o institución central.",
+        "",
+        stripHtml(body).slice(0, 12000),
+      ].join("\n"),
+      PHOTO_QUERY_SCHEMA,
+      800,
+    );
+    query = built.query;
+    altText = built.altText;
+  }
+
+  if (!query) throw new Error("No hay término de búsqueda para la foto");
+
+  const params = new URLSearchParams({
+    action: "query",
+    format: "json",
+    origin: "*",
+    generator: "search",
+    gsrsearch: `filetype:bitmap ${query}`,
+    gsrnamespace: "6",
+    gsrlimit: "12",
+    prop: "imageinfo",
+    iiprop: "url|mime|extmetadata",
+    iiurlwidth: "1024",
+  });
+
+  const response = await fetch(`https://commons.wikimedia.org/w/api.php?${params}`, {
+    headers: { "user-agent": "OffTheRecord-newsroom/1.0 (https://offtherecord.ec)" },
+  });
+  if (!response.ok) throw new Error(`Wikimedia Commons respondió ${response.status}`);
+
+  const payload = (await response.json()) as { query?: { pages?: Record<string, CommonsPage> } };
+  const pages = Object.values(payload.query?.pages || {});
+
+  const clean = (html = "") => stripHtml(html).replace(/\s+/g, " ").trim();
+
+  const photos = pages
+    .map((page) => {
+      const info = page.imageinfo?.[0];
+      if (!info?.thumburl || !/^image\/(jpeg|png|webp)$/.test(info.mime || "")) return null;
+
+      const meta = info.extmetadata || {};
+      const author = clean(meta.Artist?.value) || "Autor desconocido";
+      const license = clean(meta.LicenseShortName?.value) || "Ver licencia en Commons";
+
+      return {
+        url: info.thumburl,
+        pageUrl: info.descriptionurl || "",
+        title: (page.title || "").replace(/^File:/, ""),
+        author: author.slice(0, 120),
+        license,
+        credit: `Foto: ${author.slice(0, 80)} · ${license} · Wikimedia Commons`,
+      };
+    })
+    .filter((p): p is StockPhoto => Boolean(p))
+    .slice(0, 3);
+
+  if (!photos.length) throw new Error(`Sin resultados de foto para "${query}"`);
+
+  return { query, altText: altText || `Fotografía de ${query}`, photos };
+}
+
+/** Descarga la foto elegida y la deja en Cloudinary como activo propio. */
+export async function importStockPhoto(url: string) {
+  if (!isCloudinaryConfigured()) throw new AiUnavailableError("almacenamiento");
+  if (!/^https:\/\/upload\.wikimedia\.org\//.test(url)) {
+    throw new Error("Solo se importan fotos alojadas en Wikimedia");
+  }
+
+  const response = await fetch(url, {
+    headers: { "user-agent": "OffTheRecord-newsroom/1.0 (https://offtherecord.ec)" },
+  });
+  if (!response.ok) throw new Error(`No se pudo descargar la foto (${response.status})`);
+
+  const mime = response.headers.get("content-type") || "image/jpeg";
+  const buffer = Buffer.from(await response.arrayBuffer());
+  return uploadBase64(`data:${mime};base64,${buffer.toString("base64")}`, "image");
+}
+
+/** Borra de Cloudinary los candidatos que el editor descartó. */
+export async function discardAiAssets(publicIds: string[]) {
+  if (!isCloudinaryConfigured() || !publicIds.length) return 0;
+
+  const results = await Promise.allSettled(
+    publicIds.map((publicId) => cloudinary.uploader.destroy(publicId, { resource_type: "image" })),
+  );
+
+  return results.filter((r) => r.status === "fulfilled").length;
 }
 
 const IMAGE_PROMPT_SCHEMA = {
