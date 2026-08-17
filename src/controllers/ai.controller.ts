@@ -5,10 +5,14 @@ import {
   AiUnavailableError,
   aiCapabilities,
   buildImagePrompt,
+  discardAiAssets,
   generateAudio,
   generateHeadlines,
   generateImage,
   generateInfographic,
+  generateInfographicPosters,
+  importStockPhoto,
+  searchStockPhotos,
   generateIntertitles,
   generateSummary,
   generateVideo,
@@ -66,6 +70,72 @@ export async function infographic(req: AuthRequest, res: Response) {
   const hint = String((req.body as AnyRecord).hint || "");
   const data = await guard("infografía", () => generateInfographic(body, hint));
   res.json({ data });
+}
+
+/** Genera tres pósters candidatos; el editor luego escoge uno con `infographicChoose`. */
+export async function infographicPosters(req: AuthRequest, res: Response) {
+  const body = requireBody(req, "body");
+  const hint = String((req.body as AnyRecord).hint || "");
+  const data = await guard("infografía de imagen", () => generateInfographicPosters(body, hint));
+  res.status(201).json({ data });
+}
+
+/** Registra el póster elegido como subida propia y borra los descartados. */
+export async function infographicChoose(req: AuthRequest, res: Response) {
+  const keep = (req.body as AnyRecord).keep as AnyRecord | undefined;
+  const discard = (req.body as AnyRecord).discard;
+
+  if (!keep || typeof keep.url !== "string" || !keep.url) {
+    throw new CustomError('El campo "keep" con la imagen elegida es obligatorio', 400);
+  }
+
+  await UploadModel.create({
+    url: keep.url,
+    name: String(keep.name || "Infografía generada por IA"),
+    kind: "image",
+    provider: "gemini",
+    publicId: String(keep.publicId || ""),
+    bytes: Number(keep.bytes) || 0,
+    source: "ai",
+    userId: req.user!.userId,
+  });
+
+  const publicIds = Array.isArray(discard) ? discard.map(String).filter(Boolean) : [];
+  const removed = await discardAiAssets(publicIds);
+
+  res.json({ data: { kept: keep.url, discarded: removed } });
+}
+
+/** Busca tres fotos de archivo en Wikimedia Commons; el editor luego escoge una. */
+export async function photos(req: AuthRequest, res: Response) {
+  const body = String((req.body as AnyRecord).body || "");
+  const hint = String((req.body as AnyRecord).hint || "");
+  if (!body.trim() && !hint.trim()) throw new CustomError('Envía "body" o "hint" para buscar fotos', 400);
+
+  const data = await guard("fotos", () => searchStockPhotos(body, hint));
+  res.json({ data });
+}
+
+/** Importa a Cloudinary la foto elegida y la registra como subida propia. */
+export async function photoChoose(req: AuthRequest, res: Response) {
+  const url = requireBody(req, "url");
+  const name = String((req.body as AnyRecord).name || "Foto de archivo");
+  const credit = String((req.body as AnyRecord).credit || "");
+
+  const result = await guard("fotos", () => importStockPhoto(url));
+
+  await UploadModel.create({
+    url: result.url,
+    name,
+    kind: "image",
+    provider: "wikimedia",
+    publicId: result.publicId,
+    bytes: result.bytes,
+    source: "ai",
+    userId: req.user!.userId,
+  });
+
+  res.status(201).json({ data: { ...result, credit } });
 }
 
 export async function image(req: AuthRequest, res: Response) {
