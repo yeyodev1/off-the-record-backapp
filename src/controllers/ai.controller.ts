@@ -106,6 +106,16 @@ export async function infographicChoose(req: AuthRequest, res: Response) {
   res.json({ data: { kept: keep.url, discarded: removed } });
 }
 
+/** Borra candidatos no elegidos (al reintentar o descartar la tanda). */
+export async function infographicDiscard(req: AuthRequest, res: Response) {
+  const raw = (req.body as AnyRecord).publicIds;
+  const publicIds = Array.isArray(raw) ? raw.map(String).filter(Boolean) : [];
+  if (!publicIds.length) throw new CustomError('Envía "publicIds" con los candidatos a borrar', 400);
+
+  const removed = await discardAiAssets(publicIds);
+  res.json({ data: { discarded: removed } });
+}
+
 /** Busca tres fotos de archivo en Wikimedia Commons; el editor luego escoge una. */
 export async function photos(req: AuthRequest, res: Response) {
   const body = String((req.body as AnyRecord).body || "");
