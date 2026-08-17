@@ -161,10 +161,25 @@ export async function geminiJson<T>(
 /* Imagen                                                              */
 /* ------------------------------------------------------------------ */
 
-export async function geminiImage(prompt: string) {
+export interface GeminiImageInput {
+  mimeType: string;
+  /** Base64 sin prefijo data: */
+  data: string;
+}
+
+/** Genera una imagen; `images` son entradas de referencia (edición/composición). */
+export async function geminiImage(prompt: string, aspectRatio = "", images: GeminiImageInput[] = []) {
   const body = await call(GEMINI_MODELS.image, "generateContent", {
-    contents: [{ role: "user", parts: [{ text: prompt }] }],
-    generationConfig: { responseModalities: ["IMAGE"] },
+    contents: [
+      {
+        role: "user",
+        parts: [...images.map((image) => ({ inlineData: image })), { text: prompt }],
+      },
+    ],
+    generationConfig: {
+      responseModalities: ["IMAGE"],
+      ...(aspectRatio ? { imageConfig: { aspectRatio } } : {}),
+    },
   });
 
   const inline = firstInline(body);
