@@ -6,6 +6,7 @@ import { bootstrapData } from "./config/bootstrap";
 import { dbConnect } from "./config/mongo";
 import { globalErrorHandler } from "./middlewares/globalErrorHandler.middleware";
 import { sendAlert } from "./services/email.service";
+import { CustomError } from "./errors/customError.error";
 
 // Lo que escapa a Express (una promesa sin await, un timer que revienta) no
 // pasa por el manejador de errores: sin esto se perdía en los logs.
@@ -41,7 +42,8 @@ const corsOptions: cors.CorsOptions = {
     if (!origin || whitelist.includes(origin) || (allowVercelPreviews && vercelPreview.test(origin))) {
       callback(null, true);
     } else {
-      callback(new Error("Not allowed by CORS"));
+      // 403 y no 500: un origen ajeno no es un fallo nuestro y no debe disparar alertas.
+      callback(new CustomError("Origen no permitido", 403));
     }
   },
   credentials: true,
