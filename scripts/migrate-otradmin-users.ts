@@ -22,6 +22,8 @@ import { CategoryModel } from "../src/models/category.model";
 
 const BASE = "https://api.otradmin.com";
 const REFRESH = process.env.OTR_OLD_REFRESH || "";
+/** Alternativa al refresco: el token de acceso copiado del navegador (dura ~6 h). */
+const TOKEN = process.env.OTR_OLD_TOKEN || "";
 const WRITE = process.argv.includes("--write");
 
 type AnyRecord = Record<string, any>;
@@ -60,14 +62,14 @@ async function accessToken() {
 const ROLES: Record<number, string> = { 1: "Administrador", 2: "Lector", 3: "Escritor" };
 
 async function main() {
-  if (!REFRESH) {
+  if (!REFRESH && !TOKEN) {
     console.error('Falta OTR_OLD_REFRESH. Ejecuta: OTR_OLD_REFRESH="<jwt>" pnpm ts-node scripts/migrate-otradmin-users.ts');
     process.exit(1);
   }
 
   console.log(`Modo: ${WRITE ? "ESCRITURA REAL" : "SIMULACRO (no escribe nada)"}\n`);
 
-  const token = await accessToken();
+  const token = TOKEN || (await accessToken());
   const payload = (await (
     await fetch(`${BASE}/users`, { headers: { Authorization: token }, signal: AbortSignal.timeout(120000) })
   ).json()) as { users: OldUser[] };

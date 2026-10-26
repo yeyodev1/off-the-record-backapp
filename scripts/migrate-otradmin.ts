@@ -3,7 +3,7 @@
  *
  *   OTR_OLD_TOKEN="<jwt>" pnpm ts-node scripts/migrate-otradmin.ts                 ← simulacro
  *   OTR_OLD_TOKEN="<jwt>" pnpm ts-node scripts/migrate-otradmin.ts --write         ← escribe
- *   ... --year 2026 · --limit 20 · --kind article|exclusive|both · --page-size 25
+ *   ... --year 2026 · --limit 20 · --kind article|exclusive|both · --page-size 25 · --start-page 23
  *
  * Tres cosas que hay que saber de la API vieja:
  *
@@ -82,6 +82,8 @@ const YEAR = Number(value("year")) || null;
 const LIMIT = Number(value("limit")) || 0;
 const PAGE_SIZE = Number(value("page-size")) || 20;
 const KIND = value("kind") || "article";
+/** Página por la que empezar: evita volver a bajar el tramo ya migrado. */
+const START_PAGE = Number(value("start-page")) || 1;
 /** Meses hacia atrás desde hoy. Corta la descarga en seco al cruzar el límite. */
 const SINCE_MONTHS = Number(value("since-months")) || 0;
 
@@ -341,7 +343,9 @@ async function ensureAuthor(row: AnyRecord, fallbackId: string) {
   const lastname = String(row.user?.lastname || "").trim();
   const email = `legacy-${legacyUserId}@otradmin.local`;
 
-  let user = await UserModel.findOne({ email });
+  // Si el padrón ya se migró, la firma va a la cuenta real y no a un duplicado.
+  let user =
+    (await UserModel.findOne({ legacyId: `user:${legacyUserId}` })) || (await UserModel.findOne({ email }));
   if (!user) {
     user = await UserModel.create({
       name,
@@ -484,7 +488,7 @@ async function migrate(kind: "article" | "update", fallbackAuthorId: string) {
   const muestras: AnyRecord[] = [];
   let cortado = false;
 
-  for (let page = 1; page <= paginas; page++) {
+  for (let page = START_PAGE; page <= paginas; page++) {
     const inicio = Date.now();
 
     let lote;
