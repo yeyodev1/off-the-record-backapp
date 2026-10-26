@@ -16,7 +16,7 @@ import {
 import { proofread } from "../services/spellcheck.service";
 import { recountTags, resolveTags } from "../services/tag.service";
 import { notifyImmediatePublish, publishDueArticles, publishDueUpdates } from "../services/scheduler.service";
-import { isAdminLike } from "../middlewares/role.middleware";
+import { EDITOR_ROLE_ID, isAdminLike } from "../middlewares/role.middleware";
 
 type AnyRecord = Record<string, unknown>;
 type ContentKind = "article" | "update";
@@ -262,6 +262,12 @@ export function buildContentController(model: Model<any>, kind: ContentKind) {
 
       const doc = await model.findById(id);
       if (!doc) throw new CustomError("Contenido no encontrado", 404);
+
+      // El lector solo ve lo publicado: un borrador con el enlace directo no se abre.
+      const editorial = isAdminLike(req.user?.roleId) || req.user?.roleId === EDITOR_ROLE_ID;
+      if (!editorial && doc.get("status") !== "published") {
+        throw new CustomError("Contenido no encontrado", 404);
+      }
 
       res.json({ data: doc });
     },

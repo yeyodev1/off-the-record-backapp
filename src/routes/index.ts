@@ -166,7 +166,7 @@ function routerApi(app: Application) {
   router.post("/ai/audio", authMiddleware, EDITORIAL, asyncHandler(ai.audio));
   router.post("/ai/video", authMiddleware, EDITORIAL, asyncHandler(ai.video));
   router.post("/ai/video/status", authMiddleware, EDITORIAL, asyncHandler(ai.videoStatus));
-  router.post("/ai/spellcheck", authMiddleware, asyncHandler(ai.spellcheck));
+  router.post("/ai/spellcheck", authMiddleware, EDITORIAL, asyncHandler(ai.spellcheck));
 
   /* Reportes diario y mensual ---------------------------------------- */
   router.get("/reports", authMiddleware, EDITORIAL, asyncHandler(reports.listReports));
