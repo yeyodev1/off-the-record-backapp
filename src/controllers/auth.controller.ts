@@ -6,6 +6,7 @@ import { signAccessToken, signRefreshToken, verifyRefreshToken } from "../utils/
 import { AuthRequest } from "../types/AuthRequest";
 import { CustomError } from "../errors/customError.error";
 import { ROLE_NAMES } from "../middlewares/role.middleware";
+import { sendAlert } from "../services/email.service";
 
 function buildTokenPayload(user: {
   _id: unknown;
@@ -38,7 +39,8 @@ async function logAccess(
     await AccessLogModel.create({
       userId: user?._id ? String(user._id) : "",
       userName: user?.name || "",
-      email: user?.email || String((req.body as Record<string, unknown>)?.email || ""),
+      // Normalizado: si no, «A@x.com» y «a@x.com» se contarían por separado en el freno.
+      email: user?.email || String((req.body as Record<string, unknown>)?.email || "").toLowerCase().trim(),
       roleId: user?.roleId || 0,
       action,
       ip: req.ip || "",
@@ -51,6 +53,25 @@ async function logAccess(
   }
 }
 
+/** Ventana y topes del freno contra adivinar contraseñas. */
+const VENTANA_MS = 15 * 60_000;
+const MAX_FALLOS_CUENTA = 5;
+const MAX_FALLOS_IP = 20;
+
+/**
+ * Cuenta los fallos recientes en el registro de accesos, que vive en Mongo:
+ * un contador en memoria no sirve en Vercel, donde cada petición puede caer
+ * en una instancia distinta.
+ */
+async function demasiadosIntentos(req: AuthRequest, email: string) {
+  const desde = new Date(Date.now() - VENTANA_MS);
+  const [porCuenta, porIp] = await Promise.all([
+    AccessLogModel.countDocuments({ action: "failed", email, at: { $gte: desde } }),
+    req.ip ? AccessLogModel.countDocuments({ action: "failed", ip: req.ip, at: { $gte: desde } }) : 0,
+  ]);
+  return porCuenta >= MAX_FALLOS_CUENTA || porIp >= MAX_FALLOS_IP;
+}
+
 export async function signIn(req: AuthRequest, res: Response) {
   const { email, password } = req.body as Record<string, unknown>;
 
@@ -58,22 +79,30 @@ export async function signIn(req: AuthRequest, res: Response) {
     throw new CustomError("Email y contraseña son obligatorios", 400);
   }
 
-  const user = await UserModel.findOne({ email: String(email).toLowerCase() }).select("+password");
+  const correo = String(email).toLowerCase().trim();
+
+  if (await demasiadosIntentos(req, correo)) {
+    throw new CustomError("Demasiados intentos fallidos. Espera 15 minutos y vuelve a probar.", 429);
+  }
+
+  const user = await UserModel.findOne({ email: correo }).select("+password");
 
   if (!user) {
     await logAccess(req, "failed", undefined, "Usuario inexistente");
     throw new CustomError("Credenciales inválidas", 401);
   }
 
-  if (!user.active) {
-    await logAccess(req, "failed", user.toObject(), "Usuario inactivo");
-    throw new CustomError("El usuario está inactivo", 403);
-  }
-
+  // Primero la contraseña: decir «inactivo» a quien no la sabe confirmaría
+  // que la cuenta existe.
   const ok = await comparePassword(String(password), user.password);
   if (!ok) {
     await logAccess(req, "failed", user.toObject(), "Contraseña incorrecta");
     throw new CustomError("Credenciales inválidas", 401);
+  }
+
+  if (!user.active) {
+    await logAccess(req, "failed", user.toObject(), "Usuario inactivo");
+    throw new CustomError("El usuario está inactivo", 403);
   }
 
   user.lastLoginAt = new Date();
@@ -145,6 +174,12 @@ export async function recoverPassword(req: AuthRequest, res: Response) {
   if (user) {
     user.changepass = true;
     await user.save();
+
+    // Lo restablece un administrador: se le avisa por correo para que no espere.
+    await sendAlert(
+      `${user.email} pidió recuperar su acceso`,
+      `${[user.name, user.lastname].filter(Boolean).join(" ")} (${user.email}) solicitó restablecer su contraseña.\n\nEntra a Usuarios en el panel y asígnale una nueva.`,
+    );
   }
 
   // Respuesta uniforme para no revelar qué correos existen.

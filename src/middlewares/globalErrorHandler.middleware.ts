@@ -8,5 +8,5 @@ export function globalErrorHandler(error: any, req: Request, res: Response, _nex
   const status = error.status || 500;
   const message = error.message || "Internal Server Error";
 
-  handler.handleHttpError(res, message, status, error);
+  handler.handleHttpError(res, message, status, error, req);
 }

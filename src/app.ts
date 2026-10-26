@@ -5,6 +5,18 @@ import routerApi from "./routes";
 import { bootstrapData } from "./config/bootstrap";
 import { dbConnect } from "./config/mongo";
 import { globalErrorHandler } from "./middlewares/globalErrorHandler.middleware";
+import { sendAlert } from "./services/email.service";
+
+// Lo que escapa a Express (una promesa sin await, un timer que revienta) no
+// pasa por el manejador de errores: sin esto se perdía en los logs.
+process.on("unhandledRejection", (reason) => {
+  console.error("Promesa rechazada sin manejar", reason);
+  void sendAlert("Promesa rechazada sin manejar", String((reason as Error)?.stack || reason)).catch(() => {});
+});
+process.on("uncaughtException", (error) => {
+  console.error("Excepción no capturada", error);
+  void sendAlert("Excepción no capturada", String(error.stack || error)).catch(() => {});
+});
 
 const localOrigins = [
   "http://localhost:8100",
@@ -38,6 +50,18 @@ const corsOptions: cors.CorsOptions = {
 export function createApp() {
   const app = express();
 
+  // Vercel pone la IP real del cliente en x-forwarded-for (y la sobrescribe,
+  // no se puede falsear desde fuera): sin esto req.ip sería la del proxy y el
+  // freno de intentos de acceso bloquearía a todos a la vez.
+  app.set("trust proxy", true);
+  app.disable("x-powered-by");
+  app.use((_req, res, next) => {
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("X-Frame-Options", "DENY");
+    res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+    next();
+  });
+
   app.use(cors(corsOptions));
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ extended: true, limit: "50mb" }));
@@ -67,6 +91,15 @@ export default async function serverlessHandler(
     await bootstrapData();
   })();
 
-  await initialization;
+  try {
+    await initialization;
+  } catch (error) {
+    // Si Atlas no responde, la próxima petición debe reintentar, no heredar el fallo.
+    initialization = undefined;
+    console.error("No se pudo iniciar el backend", error);
+    void sendAlert("El backend no pudo arrancar", String((error as Error).stack || error)).catch(() => {});
+    res.status(503).json({ message: "Servicio no disponible, intenta en un momento" });
+    return;
+  }
   return serverlessApp(req, res);
 }

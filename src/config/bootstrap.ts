@@ -359,7 +359,10 @@ export async function bootstrapData() {
   await ensureTypes();
   await ensureCategories();
   await ensureIndicators();
-  await ensureUsers();
+
+  // Las cuentas de demostración comparten una contraseña conocida: jamás
+  // deben aparecer solas en una base real. Solo se siembran si se pide.
+  if (process.env.SEED_DEMO_USERS === "true") await ensureUsers();
 }
 
 export { SEED_USERS, SEED_PASSWORD };
