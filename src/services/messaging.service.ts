@@ -14,7 +14,7 @@ import { getSettings } from "../models/settings.model";
 
 const TIMEOUT_MS = 15000;
 
-export type Channel = "telegram" | "signal";
+export type Channel = "telegram" | "signal" | "email";
 
 export interface DeliveryResult {
   channel: Channel;

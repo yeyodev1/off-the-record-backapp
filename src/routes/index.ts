@@ -22,6 +22,7 @@ import * as reports from "../controllers/report.controller";
 import * as tags from "../controllers/tag.controller";
 import { listUploads, uploadToCloudinary } from "../controllers/upload.controller";
 import { healthCheck } from "../controllers/health.controller";
+import { requireCronSecret, tick } from "../controllers/cron.controller";
 
 const EDITORIAL = requireRoles(ADMIN_ROLE_ID, EDITOR_ROLE_ID);
 const ADMIN_ONLY = requireRoles(ADMIN_ROLE_ID);
@@ -64,6 +65,7 @@ function routerApi(app: Application) {
 
   /* Salud y sesión ------------------------------------------------- */
   router.get("/health", asyncHandler(healthCheck));
+  router.get("/cron/tick", requireCronSecret, asyncHandler(tick));
   router.post("/sign-in", asyncHandler(auth.signIn));
   router.post("/refresh-access-token", asyncHandler(auth.refreshAccessToken));
   router.post("/recover-password", asyncHandler(auth.recoverPassword));

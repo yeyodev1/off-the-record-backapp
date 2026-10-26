@@ -4,10 +4,11 @@ import { CustomError } from "../errors/customError.error";
 import { SettingsModel, getSettings } from "../models/settings.model";
 import { UserModel } from "../models/user.model";
 import { checkSignal, checkTelegram, sendSignal, sendTelegram } from "../services/messaging.service";
+import { checkEmail, renderEmail, sendEmail } from "../services/email.service";
 
 type AnyRecord = Record<string, unknown>;
 
-const CHANNELS = ["app", "telegram", "signal"];
+const CHANNELS = ["app", "telegram", "signal", "email"];
 
 /**
  * El token del bot nunca vuelve al panel: se manda si está puesto y sus
@@ -87,21 +88,37 @@ export async function saveSettings(req: AuthRequest, res: Response) {
   res.json({ data: present(updated), message: "Integraciones guardadas" });
 }
 
-/** Estado en vivo de los dos puentes, para el semáforo del panel. */
+/** Estado en vivo de los canales, para el semáforo del panel. */
 export async function channelStatus(_req: AuthRequest, res: Response) {
-  const [telegram, signal] = await Promise.all([checkTelegram(), checkSignal()]);
-  res.json({ data: { telegram, signal } });
+  const [telegram, signal, email] = await Promise.all([checkTelegram(), checkSignal(), checkEmail()]);
+  res.json({ data: { telegram, signal, email } });
 }
 
 /** Envía un mensaje de prueba al destino indicado o a la propia cuenta. */
 export async function testChannel(req: AuthRequest, res: Response) {
   const channel = String(req.params.channel || "");
-  if (channel !== "telegram" && channel !== "signal") {
+  if (channel !== "telegram" && channel !== "signal" && channel !== "email") {
     throw new CustomError("Canal desconocido", 400);
   }
 
   const body = req.body as AnyRecord;
   let to = String(body.to || "").trim();
+
+  // El correo de prueba va siempre a la cuenta de quien lo pide: así el
+  // botón no sirve para escribir a terceros desde el dominio.
+  if (channel === "email") {
+    const me = await UserModel.findById(req.user!.userId).select("email");
+    const destino = String(me?.email || "");
+    const { html, text } = renderEmail({
+      eyebrow: "Prueba de integración",
+      title: "El correo funciona",
+      body: "Si lees esto, Off The Record ya puede enviar notificaciones y alertas por correo.",
+    });
+    const result = await sendEmail({ to: destino, subject: "Off The Record · prueba de correo", html, text });
+    if (!result.ok) throw new CustomError(result.error || "No se pudo enviar", 502);
+    res.json({ data: result, message: `Correo de prueba enviado a ${destino}` });
+    return;
+  }
 
   if (!to) {
     const me = await UserModel.findById(req.user!.userId).select("signalHandle telegramChatId");

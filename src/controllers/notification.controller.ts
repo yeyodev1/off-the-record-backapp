@@ -5,6 +5,7 @@ import { CustomError } from "../errors/customError.error";
 import { NotificationModel } from "../models/notification.model";
 import { UserModel } from "../models/user.model";
 import { isAdminLike } from "../middlewares/role.middleware";
+import { deliverNotification } from "../services/scheduler.service";
 
 type AnyRecord = Record<string, unknown>;
 
@@ -22,20 +23,25 @@ const EDITABLE = [
   "scheduledFor",
 ];
 
-async function audienceSize(payload: AnyRecord) {
-  if (payload.audience === "users") return (payload.userIds as string[] | undefined)?.length || 0;
-
-  const filter: AnyRecord = { active: true };
-  if (payload.audience === "role" && typeof payload.roleId === "number") filter.roleId = payload.roleId;
-  if (payload.audience === "category" && payload.categoryId) filter.categoryIds = payload.categoryId;
-
-  return UserModel.countDocuments(filter);
-}
+const CHANNELS = ["app", "telegram", "signal", "email"];
 
 function buildPayload(body: AnyRecord) {
   const payload: AnyRecord = {};
   for (const field of EDITABLE) {
     if (field in body) payload[field] = body[field];
+  }
+
+  // El formulario elige un canal; el despacho lee la lista. Sin derivarla, el
+  // valor por defecto (["app"]) dejaba fuera el correo y Signal.
+  if (Array.isArray(body.channels)) {
+    const picked = body.channels.map(String).filter((item) => CHANNELS.includes(item));
+    const channels = picked.length ? picked : ["app"];
+    payload.channels = channels;
+    payload.channel = channels[0];
+  } else if ("channel" in payload) {
+    const channel = CHANNELS.includes(String(payload.channel)) ? String(payload.channel) : "app";
+    payload.channel = channel;
+    payload.channels = channel === "app" ? ["app"] : ["app", channel];
   }
 
   if (payload.roleId !== undefined && payload.roleId !== null) {
@@ -60,6 +66,15 @@ export async function listNotifications(req: AuthRequest, res: Response) {
   res.json({ data });
 }
 
+/** Resume el envío para el aviso del panel: cuántos llegaron y cuántos no. */
+function deliveryMessage(notification: { delivery?: { attempted?: number; failed?: number } | null }) {
+  const attempted = notification.delivery?.attempted || 0;
+  const failed = notification.delivery?.failed || 0;
+  if (!attempted) return "Notificación enviada";
+  if (!failed) return `Notificación enviada · ${attempted} envíos externos`;
+  return `Notificación enviada · ${attempted - failed} de ${attempted} envíos externos llegaron`;
+}
+
 export async function createNotification(req: AuthRequest, res: Response) {
   const body = req.body as AnyRecord;
   if (!body.title || !body.message) throw new CustomError("Título y mensaje son obligatorios", 400);
@@ -71,12 +86,16 @@ export async function createNotification(req: AuthRequest, res: Response) {
     ...payload,
     status: sendNow ? "sent" : "scheduled",
     sentAt: sendNow ? new Date() : null,
-    deliveredCount: sendNow ? await audienceSize({ ...payload, audience: payload.audience || "all" }) : 0,
+    deliveredCount: 0,
     createdBy: req.user!.userId,
     createdByName: req.user!.email,
   });
 
-  res.status(201).json({ data: created, message: sendNow ? "Notificación enviada" : "Notificación programada" });
+  // Antes solo se marcaba como enviada: la campana la veía, pero no salía
+  // por Telegram, Signal ni correo.
+  const data = sendNow ? await deliverNotification(created) : created;
+
+  res.status(201).json({ data, message: sendNow ? deliveryMessage(data) : "Notificación programada" });
 }
 
 export async function updateNotification(req: AuthRequest, res: Response) {
@@ -100,12 +119,10 @@ export async function sendNotification(req: AuthRequest, res: Response) {
   const notification = await NotificationModel.findById(id);
   if (!notification) throw new CustomError("Notificación no encontrada", 404);
 
-  notification.status = "sent";
-  notification.sentAt = new Date();
-  notification.deliveredCount = await audienceSize(notification.toObject());
-  await notification.save();
+  if (notification.status === "sent") throw new CustomError("Esta notificación ya se envió", 400);
 
-  res.json({ data: notification, message: "Notificación enviada" });
+  const data = await deliverNotification(notification);
+  res.json({ data, message: deliveryMessage(data) });
 }
 
 export async function deleteNotification(req: AuthRequest, res: Response) {

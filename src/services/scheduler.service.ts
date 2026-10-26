@@ -6,6 +6,7 @@ import { getSettings } from "../models/settings.model";
 import { ensureScheduledReports } from "./report.service";
 import { syncDueIndicators } from "./indicatorSync.service";
 import { sendSignal, sendTelegram, type DeliveryResult } from "./messaging.service";
+import { pieceUrl, renderEmail, sendAlert, sendEmailBatch } from "./email.service";
 import { invalidateFacets } from "../controllers/reader.controller";
 
 /** Devuelve los usuarios concretos, no un número: hay que escribirles. */
@@ -139,53 +140,113 @@ function composeMessage(notification: { title: string; message: string; link?: s
   return parts.join("\n\n");
 }
 
-export async function dispatchDueNotifications() {
-  const now = new Date();
-  const due = await NotificationModel.find({ status: "scheduled", scheduledFor: { $lte: now } });
-  if (!due.length) return;
+type NotificationDoc = InstanceType<typeof NotificationModel>;
 
+/**
+ * Despacha una notificación por todos sus canales y deja constancia del
+ * resultado. La usan el envío inmediato, el botón «Enviar» y el planificador.
+ */
+export async function deliverNotification(notification: NotificationDoc) {
+  const now = new Date();
   const settings = await getSettings();
 
-  for (const notification of due) {
-    const recipients = await resolveRecipients(notification.toObject());
-    const channels = notification.channels?.length ? notification.channels : [notification.channel || "app"];
-    const text = composeMessage(notification.toObject());
+  const recipients = await resolveRecipients(notification.toObject());
+  const channels = notification.channels?.length ? notification.channels : [notification.channel || "app"];
+  const text = composeMessage(notification.toObject());
 
-    const results: DeliveryResult[] = [];
+  const results: DeliveryResult[] = [];
 
-    // "app" no se envía: la campana lee la notificación de la base.
-    if (channels.includes("telegram") && settings.telegram?.enabled) {
-      for (const user of recipients) {
-        if (!user.telegramChatId) continue;
-        results.push(await sendTelegram(user.telegramChatId, text));
-      }
-      if (settings.telegram.broadcastChatId) {
-        results.push(await sendTelegram(settings.telegram.broadcastChatId, text));
-      }
+  // "app" no se envía: la campana lee la notificación de la base.
+  if (channels.includes("telegram") && settings.telegram?.enabled) {
+    for (const user of recipients) {
+      if (!user.telegramChatId) continue;
+      results.push(await sendTelegram(user.telegramChatId, text));
     }
-
-    if (channels.includes("signal") && settings.signal?.enabled) {
-      for (const user of recipients) {
-        if (!user.signalHandle) continue;
-        results.push(await sendSignal(user.signalHandle, text));
-      }
+    if (settings.telegram.broadcastChatId) {
+      results.push(await sendTelegram(settings.telegram.broadcastChatId, text));
     }
+  }
 
-    const failed = results.filter((result) => !result.ok);
+  if (channels.includes("signal") && settings.signal?.enabled) {
+    for (const user of recipients) {
+      if (!user.signalHandle) continue;
+      results.push(await sendSignal(user.signalHandle, text));
+    }
+  }
 
-    notification.status = "sent";
-    notification.sentAt = now;
-    notification.deliveredCount = recipients.length;
-    notification.delivery = {
-      attempted: results.length,
-      succeeded: results.length - failed.length,
-      failed: failed.length,
-      // Se guardan solo los primeros errores: basta para diagnosticar.
-      errors: failed.slice(0, 10).map((result) => `${result.channel} ${result.to}: ${result.error}`),
-    };
-    notification.error = failed.length ? `${failed.length} envíos fallaron` : "";
+  if (channels.includes("email")) {
+    const url = notification.link || pieceUrl(notification.targetType, notification.targetId);
+    const { html, text: plain } = renderEmail({
+      eyebrow: notification.title,
+      title: notification.message,
+      body: "",
+      ctaLabel: notification.targetType === "none" ? "Abrir Off The Record" : "Leer ahora",
+      ctaUrl: url,
+    });
+    const subject = `${notification.title}: ${notification.message}`.slice(0, 180);
 
-    await notification.save();
+    results.push(
+      ...(await sendEmailBatch(
+        recipients
+          .map((user) => String(user.email || "").toLowerCase())
+          .filter(Boolean)
+          .map((to) => ({ to, subject, html, text: plain })),
+      )),
+    );
+  }
+
+  const failed = results.filter((result) => !result.ok);
+
+  notification.status = "sent";
+  notification.sentAt = now;
+  notification.deliveredCount = recipients.length;
+  notification.delivery = {
+    attempted: results.length,
+    succeeded: results.length - failed.length,
+    failed: failed.length,
+    // Se guardan solo los primeros errores: basta para diagnosticar.
+    errors: failed.slice(0, 10).map((result) => `${result.channel} ${result.to}: ${result.error}`),
+  };
+  notification.error = failed.length ? `${failed.length} envíos fallaron` : "";
+
+  await notification.save();
+
+  // Que falle todo un canal (clave caída, puente apagado) sí merece aviso.
+  if (results.length && failed.length === results.length) {
+    await sendAlert(
+      "Una notificación no llegó a nadie",
+      `«${notification.title}» (${String(notification._id)}): fallaron los ${failed.length} envíos.\n\n${failed
+        .slice(0, 5)
+        .map((result) => `${result.channel} ${result.to}: ${result.error}`)
+        .join("\n")}`,
+    );
+  }
+
+  return notification;
+}
+
+export async function dispatchDueNotifications() {
+  const due = await NotificationModel.find({ status: "scheduled", scheduledFor: { $lte: new Date() } }).select("_id");
+
+  for (const { _id } of due) {
+    // Se reserva de forma atómica: si el cron y otra petición coinciden, solo
+    // uno la envía. Sin esto la misma notificación podía salir dos veces.
+    const notification = await NotificationModel.findOneAndUpdate(
+      { _id, status: "scheduled" },
+      { $set: { status: "sent", sentAt: new Date() } },
+      { new: true },
+    );
+    if (!notification) continue;
+
+    try {
+      await deliverNotification(notification);
+    } catch (error) {
+      console.error("No se pudo despachar la notificación", notification._id, error);
+      notification.status = "failed";
+      notification.error = (error as Error).message.slice(0, 300);
+      await notification.save();
+      await sendAlert("Falló el despacho de una notificación", `${notification.title}\n\n${(error as Error).stack || error}`);
+    }
   }
 }
 
@@ -199,6 +260,7 @@ export async function runScheduler() {
     await syncDueIndicators();
   } catch (error) {
     console.error("No se pudieron sincronizar los indicadores", error);
+    await sendAlert("No se pudieron sincronizar los indicadores", String((error as Error).stack || error));
   }
 
   // Los reportes se generan solos; un fallo de IA no debe frenar el resto.
@@ -206,5 +268,6 @@ export async function runScheduler() {
     await ensureScheduledReports();
   } catch (error) {
     console.error("No se pudieron generar los reportes automáticos", error);
+    await sendAlert("No se pudieron generar los reportes automáticos", String((error as Error).stack || error));
   }
 }
