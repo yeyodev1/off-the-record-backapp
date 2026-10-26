@@ -3,7 +3,7 @@
  *
  *   OTR_OLD_TOKEN="<jwt>" pnpm ts-node scripts/migrate-otradmin.ts                 ← simulacro
  *   OTR_OLD_TOKEN="<jwt>" pnpm ts-node scripts/migrate-otradmin.ts --write         ← escribe
- *   ... --year 2026 · --limit 20 · --kind article|exclusive|both · --page-size 25 · --start-page 23
+ *   ... --year 2026 · --limit 20 · --kind article|exclusive|both · --page-size 25 · --start-page 23 · --end-page 40
  *
  * Tres cosas que hay que saber de la API vieja:
  *
@@ -84,6 +84,8 @@ const PAGE_SIZE = Number(value("page-size")) || 20;
 const KIND = value("kind") || "article";
 /** Página por la que empezar: evita volver a bajar el tramo ya migrado. */
 const START_PAGE = Number(value("start-page")) || 1;
+/** Última página: permite repartir el traslado entre varios procesos. */
+const END_PAGE = Number(value("end-page")) || 0;
 /** Meses hacia atrás desde hoy. Corta la descarga en seco al cruzar el límite. */
 const SINCE_MONTHS = Number(value("since-months")) || 0;
 
@@ -488,7 +490,8 @@ async function migrate(kind: "article" | "update", fallbackAuthorId: string) {
   const muestras: AnyRecord[] = [];
   let cortado = false;
 
-  for (let page = START_PAGE; page <= paginas; page++) {
+  const ultima = END_PAGE ? Math.min(END_PAGE, paginas) : paginas;
+  for (let page = START_PAGE; page <= ultima; page++) {
     const inicio = Date.now();
 
     let lote;
