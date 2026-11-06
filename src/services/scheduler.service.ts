@@ -30,7 +30,7 @@ async function resolveRecipients(notification: {
     filter.categoryIds = notification.categoryId;
   }
 
-  return UserModel.find(filter).select("name lastname email signalHandle telegramChatId");
+  return UserModel.find(filter).select("name lastname email signalHandle telegramChatId emailNotifications notifyEmail");
 }
 
 interface PublishedPiece {
@@ -152,7 +152,9 @@ export async function deliverNotification(notification: NotificationDoc) {
 
   const recipients = await resolveRecipients(notification.toObject());
   const channels = notification.channels?.length ? notification.channels : [notification.channel || "app"];
-  const text = composeMessage(notification.toObject());
+  const plain = notification.toObject();
+  // Sin enlace, el aviso por Telegram/Signal no lleva a ningún lado.
+  const text = composeMessage({ ...plain, link: plain.link || pieceUrl(plain.targetType, plain.targetId) });
 
   const results: DeliveryResult[] = [];
 
@@ -187,10 +189,16 @@ export async function deliverNotification(notification: NotificationDoc) {
 
     results.push(
       ...(await sendEmailBatch(
-        recipients
-          .map((user) => String(user.email || "").toLowerCase())
-          .filter(Boolean)
-          .map((to) => ({ to, subject, html, text: plain })),
+        // Quien apagó el correo no recibe; quien puso un correo adicional, recibe en los dos.
+        [
+          ...new Set(
+            recipients
+              .filter((user) => user.emailNotifications !== false)
+              .flatMap((user) => [user.email, user.notifyEmail])
+              .map((email) => String(email || "").toLowerCase())
+              .filter(Boolean),
+          ),
+        ].map((to) => ({ to, subject, html, text: plain })),
       )),
     );
   }

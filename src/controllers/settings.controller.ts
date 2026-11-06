@@ -3,7 +3,13 @@ import { AuthRequest } from "../types/AuthRequest";
 import { CustomError } from "../errors/customError.error";
 import { SettingsModel, getSettings } from "../models/settings.model";
 import { UserModel } from "../models/user.model";
-import { checkSignal, checkTelegram, sendSignal, sendTelegram } from "../services/messaging.service";
+import {
+  checkSignal,
+  checkTelegram,
+  sendSignal,
+  sendTelegram,
+  registerTelegramWebhook,
+} from "../services/messaging.service";
 import { checkEmail, renderEmail, sendEmail } from "../services/email.service";
 
 type AnyRecord = Record<string, unknown>;
@@ -85,7 +91,18 @@ export async function saveSettings(req: AuthRequest, res: Response) {
   const updated = await SettingsModel.findOneAndUpdate({ key: "global" }, { $set }, { new: true });
   if (!updated) throw new CustomError("No se pudieron guardar los ajustes", 500);
 
-  res.json({ data: present(updated), message: "Integraciones guardadas" });
+  // Con el bot activo, se le dice a Telegram a dónde mandar los /start de los lectores.
+  // Es idempotente: guardar de nuevo lo repara si alguien lo cambió.
+  let aviso = "";
+  if (updated.telegram?.enabled && updated.telegram.botToken) {
+    try {
+      await registerTelegramWebhook(`https://${req.get("host")}/api/telegram/webhook`);
+    } catch (error) {
+      aviso = ` · el bot no quedó escuchando: ${(error as Error).message}`;
+    }
+  }
+
+  res.json({ data: present(updated), message: `Integraciones guardadas${aviso}` });
 }
 
 /** Estado en vivo de los canales, para el semáforo del panel. */

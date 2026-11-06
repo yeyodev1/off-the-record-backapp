@@ -15,6 +15,8 @@ const settingsSchema = new Schema(
       botToken: { type: String, default: "" },
       /** Canal o grupo al que además se envía todo, si se quiere. */
       broadcastChatId: { type: String, default: "" },
+      /** Lo que Telegram manda en X-Telegram-Bot-Api-Secret-Token. Nunca sale al panel. */
+      webhookSecret: { type: String, default: "" },
     },
 
     signal: {

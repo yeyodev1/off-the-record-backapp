@@ -1,4 +1,5 @@
-import { getSettings } from "../models/settings.model";
+import { randomBytes } from "crypto";
+import { SettingsModel, getSettings } from "../models/settings.model";
 
 /**
  * Envío por Telegram y Signal.
@@ -61,11 +62,10 @@ export async function sendTelegram(chatId: string, text: string): Promise<Delive
     if (!settings.telegram.botToken) throw new Error("Falta el token del bot");
     if (!chatId) throw new Error("El destinatario no tiene chat de Telegram");
 
+    // Texto plano: un «&» o «<» en un titular rompía el envío con parse_mode HTML.
     await postJson(`https://api.telegram.org/bot${settings.telegram.botToken}/sendMessage`, {
       chat_id: chatId,
       text,
-      parse_mode: "HTML",
-      disable_web_page_preview: false,
     });
 
     result.ok = true;
@@ -74,6 +74,34 @@ export async function sendTelegram(chatId: string, text: string): Promise<Delive
   }
 
   return result;
+}
+
+/** Cualquier método de la API de bots (getMe, setWebhook…). Lanza si Telegram dice que no. */
+export async function telegramApi(method: string, body: unknown = {}) {
+  const settings = await getSettings();
+  if (!settings.telegram?.botToken) throw new Error("Falta el token del bot");
+
+  const payload = await postJson(`https://api.telegram.org/bot${settings.telegram.botToken}/${method}`, body);
+  return payload.result as Record<string, unknown>;
+}
+
+/**
+ * Le dice a Telegram a dónde mandar lo que los lectores escriben al bot.
+ * Idempotente: el secreto se crea una vez y se reutiliza.
+ */
+export async function registerTelegramWebhook(url: string) {
+  const settings = await getSettings();
+  let secret = settings.telegram?.webhookSecret || "";
+  if (!secret) {
+    secret = randomBytes(24).toString("hex");
+    await SettingsModel.updateOne({ key: "global" }, { $set: { "telegram.webhookSecret": secret } });
+  }
+
+  await telegramApi("setWebhook", {
+    url,
+    secret_token: secret,
+    allowed_updates: ["message"],
+  });
 }
 
 /* ------------------------------------------------------------------ */

@@ -211,6 +211,14 @@ export async function updateMe(req: AuthRequest, res: Response) {
     if (field in body) payload[field] = String(body[field] ?? "").trim();
   }
 
+  if (typeof body.emailNotifications === "boolean") payload.emailNotifications = body.emailNotifications;
+
+  if ("notifyEmail" in body) {
+    const extra = String(body.notifyEmail ?? "").trim().toLowerCase();
+    if (extra && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(extra)) throw new CustomError("El correo adicional no es válido", 400);
+    payload.notifyEmail = extra;
+  }
+
   // Un nombre vacío dejaría la ficha sin identificar.
   if ("name" in payload && !String(payload.name || "").length) {
     throw new CustomError("El nombre no puede quedar vacío", 400);

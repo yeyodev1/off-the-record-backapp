@@ -16,6 +16,7 @@ import * as notifications from "../controllers/notification.controller";
 import * as analytics from "../controllers/analytics.controller";
 import * as reader from "../controllers/reader.controller";
 import * as settings from "../controllers/settings.controller";
+import * as telegram from "../controllers/telegram.controller";
 import * as ai from "../controllers/ai.controller";
 import * as receipts from "../controllers/receipts.controller";
 import * as reports from "../controllers/report.controller";
@@ -73,6 +74,8 @@ function routerApi(app: Application) {
   router.post("/change-password", authMiddleware, asyncHandler(auth.changeOwnPassword));
   router.get("/me", authMiddleware, asyncHandler(users.me));
   router.put("/me", authMiddleware, asyncHandler(users.updateMe));
+  router.post("/me/telegram-link", authMiddleware, asyncHandler(telegram.createTelegramLink));
+  router.post("/telegram/webhook", asyncHandler(telegram.telegramWebhook));
 
   /* Enlaces públicos compartidos por Signal ------------------------ */
   router.get("/shared/r/:token", asyncHandler(buildShareReader(ArticleModel as never, "article")));

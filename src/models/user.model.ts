@@ -15,7 +15,14 @@ const userSchema = new Schema(
     /** Número en formato +593… al que escribe el puente de Signal. */
     signalHandle: { type: String, default: "" },
     /** Lo entrega el bot cuando el usuario le escribe /start. */
-    telegramChatId: { type: String, default: "" },
+    telegramChatId: { type: String, default: "", index: true },
+    /** Enlace de un solo uso t.me/<bot>?start=<token> para conectar el chat sin copiar ids. */
+    telegramLinkToken: { type: String, default: "", select: false, index: true },
+    telegramLinkExpires: { type: Date, default: null, select: false },
+    /** El lector puede apagar las noticias por correo. */
+    emailNotifications: { type: Boolean, default: true },
+    /** Un correo adicional al que también le llegan las noticias. */
+    notifyEmail: { type: String, trim: true, lowercase: true, default: "" },
     /** Id en otradmin: hace repetible la migración del padrón. */
     legacyId: { type: String, default: "", index: true },
     organization: { type: String, default: "" },
