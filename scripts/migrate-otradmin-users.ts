@@ -19,6 +19,7 @@ import "dotenv/config";
 import mongoose from "mongoose";
 import { UserModel } from "../src/models/user.model";
 import { CategoryModel } from "../src/models/category.model";
+import { hashPassword } from "../src/utils/password";
 
 const BASE = "https://api.otradmin.com";
 const REFRESH = process.env.OTR_OLD_REFRESH || "";
@@ -105,6 +106,15 @@ async function main() {
 
   await mongoose.connect(process.env.DB_URI as string);
 
+  // La API vieja ya no expone el hash bcrypt, y el campo password es obligatorio.
+  // Clave temporal + changepass=true: nadie queda fuera y la cambian al entrar.
+  // Sin valor por defecto: una clave fija en el repo daría acceso a cualquiera que lo lea.
+  const TEMP_PASSWORD = process.env.OTR_TEMP_PASSWORD || "";
+  if (conHash < users.length && TEMP_PASSWORD.length < 8) {
+    throw new Error(`${users.length - conHash} cuentas sin hash: define OTR_TEMP_PASSWORD (mín. 8 caracteres)`);
+  }
+  const tempHash = TEMP_PASSWORD ? await hashPassword(TEMP_PASSWORD) : "";
+
   // Los lectores premium entran en el segmento de clientes premium.
   const premiumCat = await CategoryModel.findOne({ scope: "audience", name: /premium/i }).select("_id name");
 
@@ -117,15 +127,18 @@ async function main() {
       continue;
     }
 
+    const oldHash = String(user.password || "");
+    const hasHash = oldHash.startsWith("$2");
+
     const datos: AnyRecord = {
       name: String(user.name || "").trim() || "Sin nombre",
       lastname: String(user.lastname || "").trim(),
       ci: String(user.ci || ""),
       email,
-      // Hash bcrypt del sistema viejo: la contraseña de siempre sigue valiendo.
-      password: user.password,
+      // Si el viejo trae hash bcrypt se reutiliza; si no, clave temporal.
+      password: hasHash ? oldHash : tempHash,
       active: Boolean(user.active),
-      changepass: Boolean(user.changepass),
+      changepass: hasHash ? Boolean(user.changepass) : true,
       phone: String(user.phone || ""),
       premium: Boolean(user.premium),
       roleId: Number(user.roleId) || 2,
@@ -154,7 +167,7 @@ async function main() {
       continue;
     }
 
-    const creado = await UserModel.create(datos as never);
+    const creado = await UserModel.create(datos);
     resumen.creados++;
 
     // La fecha de alta original, por el driver crudo (Mongoose la trata como inmutable).
